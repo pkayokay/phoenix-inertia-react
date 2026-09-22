@@ -4,10 +4,11 @@ description: >-
   Phoenix + Inertia.js + React + TypeScript via the official `inertia` Hex package
   (inertiajs/inertia-phoenix). Assumes that stack. Use when installing Inertia,
   writing assign_prop/render_inertia controllers, TSX pages/forms, shared props,
-  deferred/merge/once/scroll props, validation errors, flash, CSRF,
-  Inertia.Testing, or SSR. NEVER useEffect+fetch for page data. NEVER
-  react-hook-form. External URLs use Phoenix redirect (auto-converted);
-  same-origin non-Inertia routes need force_inertia_redirect.
+  deferred/merge/once/scroll props, Inertia.Errors / ScrollMetadata protocols,
+  validation errors, flash, CSRF, asset versioning, Inertia.Testing, or SSR.
+  NEVER useEffect+fetch for page data. NEVER react-hook-form. External URLs use
+  Phoenix redirect (auto-converted); same-origin non-Inertia routes need
+  force_inertia_redirect.
 ---
 
 # Phoenix + Inertia + React + TypeScript
@@ -21,8 +22,9 @@ traditional SPA.
 **Package name:** Hex dep is `{:inertia, "~> 2.6"}`. Do not confuse with the
 older community `inertia_phoenix` package.
 
-**Target API:** stable v2.x. Only use v3 `assign_shared_prop` / `inertia_share`
-if `mix.exs` pins `3.x`.
+**Target API:** stable v2.x (covers the full
+[inertia-phoenix README](https://github.com/inertiajs/inertia-phoenix)). Only use
+v3 `assign_shared_prop` / `inertia_share` if `mix.exs` pins `3.x`.
 
 **Props casing:** Prefer `camelize_props: true` so Elixir `snake_case` becomes
 JS `camelCase` matching TypeScript types. If disabled, TS prop names stay snake_case.
@@ -37,7 +39,7 @@ JS `camelCase` matching TypeScript types. If disabled, TS prop names stay snake_
 **Before building a feature, ask:**
 - **Where does data come from?** Server → `assign_prop`. User UI chrome → `useState`.
 - **Needed on every page?** Shared plug with `assign_prop`, not per-action duplication.
-- **Expensive?** `inertia_defer` / `inertia_optional` / bare `fn -> ... end` lazy eval.
+- **Expensive?** `inertia_defer` / `inertia_optional` / bare `fn -> ... end` or `&fun/0`.
 - **Reaching for SPA patterns?** Check the decision matrix first.
 
 ## Decision Matrix
@@ -52,6 +54,8 @@ JS `camelCase` matching TypeScript types. If disabled, TS prop names stay snake_
 | Expensive props | `inertia_defer` | Client loading + fetch |
 | Infinite scroll | `inertia_scroll` + `<InfiniteScroll>` | Client-only pagination |
 | Stable reference data | `inertia_once` | Cache in React state |
+| Custom error types | `Inertia.Errors` protocol + `assign_errors` | Hand-rolled JSON error maps |
+| Pagination library structs | `Inertia.ScrollMetadata` + `inertia_scroll` | Manual meta shaping every time |
 | External / non-Inertia URL | `redirect(to: url)` or `force_inertia_redirect` | Broken 302 JSON parse |
 | Ephemeral UI | `useState` | Server props |
 
@@ -68,6 +72,7 @@ JS `camelCase` matching TypeScript types. If disabled, TS prop names stay snake_
 | 7 | CSRF: `axios.defaults.xsrfHeaderName = "x-csrf-token"` | Phoenix expects that header; cookie is set by adapter |
 | 8 | External redirects: Phoenix `redirect` is auto-converted; same-origin non-Inertia needs `force_inertia_redirect` | Else Inertia client mis-handles the response |
 | 9 | Type page props explicitly; keep TS names in sync with `camelize_props` | Mismatched casing = silent `undefined` at runtime |
+| 10 | Production SSR requires Node + `NODE_ENV=production` | Without it, SSR renders are extremely slow |
 
 ## Quick Patterns
 
@@ -77,7 +82,7 @@ JS `camelCase` matching TypeScript types. If disabled, TS prop names stay snake_
 def index(conn, _params) do
   conn
   |> assign_prop(:users, Accounts.list_users())
-  |> assign_prop(:stats, inertia_defer(fn -> Accounts.stats() end))
+  |> assign_prop(:stats, inertia_defer(&Accounts.stats/0))
   |> render_inertia("Users/Index")
 end
 
@@ -151,13 +156,14 @@ export default function New() {
 | Helper | Behavior |
 |--------|----------|
 | value / map | Always included, always evaluated |
-| `fn -> ... end` | Included on first visit; lazy on partial reload |
-| `inertia_optional(fn -> ... end)` | Only when requested via partial reload |
-| `inertia_defer(fn -> ... end)` | After first paint (async client fetch) |
-| `inertia_defer(fn, "group")` | Deferred in named parallel group |
+| `fn -> ... end` or `&Mod.fun/0` | Included on first visit; lazy on partial reload |
+| `inertia_optional(fun)` | Only when requested via partial reload |
+| `inertia_defer(fun)` | After first paint (async client fetch) |
+| `inertia_defer(fun, "group")` | Deferred in named parallel group |
 | `inertia_merge(value)` | Merge/append on client (pagination) |
+| `inertia_defer(fun) |> inertia_merge()` | Deferred then merged |
 | `inertia_deep_merge(value)` | Deep merge nested objects |
-| `inertia_once(fn -> ... end)` | Client-cached across pages |
+| `inertia_once(fun)` | Client-cached across pages (`fresh`, `until`, `as`) |
 | `inertia_scroll(page)` | Infinite scroll metadata + merge |
 | `inertia_always(value)` | Included even on partial reloads that omit it |
 | `preserve_case(:key)` | Wrap the **key** in `assign_prop` to skip camelization |
@@ -165,19 +171,27 @@ export default function New() {
 ```elixir
 |> assign_prop(preserve_case(:snake_stays), "value")
 |> assign_prop(:csrf_token, inertia_always(get_csrf_token()))
+|> assign_prop(:stats, &Accounts.stats/0)
 ```
+
+Protocols (when built-ins are not enough):
+
+- `Inertia.Errors` — custom error structs → flat error map for `assign_errors`
+- `Inertia.ScrollMetadata` — pagination library structs → scroll meta for `inertia_scroll`
 
 ## References (read when needed)
 
-- Setup / Igniter / TS client boot → [references/setup.md](references/setup.md)
-- Controllers, props, errors, flash, redirects → [references/controllers.md](references/controllers.md)
-- TSX pages, layouts, navigation, deferred UI → [references/react-pages.md](references/react-pages.md)
+- Setup / Igniter / TS client / asset versioning / CSRF → [references/setup.md](references/setup.md)
+- Controllers, props, Errors/ScrollMetadata protocols, flash, redirects, history → [references/controllers.md](references/controllers.md)
+- TSX pages, layouts, navigation, deferred UI, infinite scroll → [references/react-pages.md](references/react-pages.md)
 - Forms and validation UX → [references/react-forms.md](references/react-forms.md)
 - `Inertia.Testing` → [references/testing.md](references/testing.md)
-- SSR → [references/ssr.md](references/ssr.md)
+- SSR (dev + production Node/`NODE_ENV`) → [references/ssr.md](references/ssr.md)
 
 ## Docs
 
 - HexDocs: https://hexdocs.pm/inertia
 - Repo: https://github.com/inertiajs/inertia-phoenix
 - Client: https://inertiajs.com
+- `Inertia.Errors`: https://hexdocs.pm/inertia/Inertia.Errors.html
+- `Inertia.ScrollMetadata`: https://hexdocs.pm/inertia/Inertia.ScrollMetadata.html

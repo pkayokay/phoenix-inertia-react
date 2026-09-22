@@ -1,6 +1,6 @@
 # Testing — Inertia Phoenix
 
-Import helpers in `ConnCase`:
+Import helpers in `ConnCase` (recommended so every controller test has them):
 
 ```elixir
 defmodule MyAppWeb.ConnCase do
@@ -18,6 +18,9 @@ defmodule MyAppWeb.ConnCase do
 end
 ```
 
+Helpers: `inertia_component/1`, `inertia_props/1`, `inertia_errors/1`,
+`inertia_response?/1`.
+
 ## Assert component + props
 
 Prop keys in `inertia_props/1` match what the **server** assigned (atoms / snake_case
@@ -33,6 +36,14 @@ test "renders users index", %{conn: conn} do
 end
 ```
 
+```elixir
+test "renders home", %{conn: conn} do
+  conn = get(conn, ~p"/")
+  assert inertia_component(conn) == "Home"
+  assert %{user: %{id: 1}} = inertia_props(conn)
+end
+```
+
 ## Assert errors after failed create
 
 `inertia_errors/1` reads errors from the current props **or** the session after
@@ -40,9 +51,10 @@ redirect — you usually assert on the redirect response without `follow_redirec
 
 ```elixir
 test "rejects blank name", %{conn: conn} do
-  conn = post(conn, ~p"/users", user: %{name: ""})
+  conn = post(conn, ~p"/users", %{"name" => ""})
 
   assert redirected_to(conn) == ~p"/users/new"
+  assert %{user: %{id: 1}} = inertia_props(conn) # shared props still present
   assert inertia_errors(conn) == %{"name" => "can't be blank"}
 end
 ```
@@ -54,4 +66,5 @@ end
 - Deferred props may be absent or marked deferred depending on request headers —
   test the initial visit and partial-reload cases separately
 - Assert serialized maps, not raw Ecto structs
-- Use `inertia_response?/1` when a action might return a non-Inertia response
+- Use `inertia_response?/1` when an action might return a non-Inertia response
+- Error keys are flat strings (`"name"`, `"team.name"`) — same shape as the client
