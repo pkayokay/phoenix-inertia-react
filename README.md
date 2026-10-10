@@ -34,8 +34,8 @@ Wire up form validation errors from an Ecto changeset
 
 ## Stack
 
-- Phoenix + Hex `inertia` (~> 2.6)
-- React + TypeScript (`@inertiajs/react`, `.tsx` pages)
+- Phoenix + Hex `inertia` (~> 3.0) + `@inertiajs/react` v3
+- React + TypeScript (`.tsx` pages)
 - esbuild (default); Vite if already in use
 
 ## License

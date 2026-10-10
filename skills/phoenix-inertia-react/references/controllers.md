@@ -3,6 +3,7 @@
 Import `Inertia.Controller` via `MyAppWeb, :controller`.
 
 Stack assumption: React + TypeScript client; prefer `camelize_props: true`.
+Targets **inertia Hex ~> 3.0**.
 
 Official adapter: https://github.com/inertiajs/inertia-phoenix
 
@@ -17,19 +18,21 @@ conn
 conn
 |> render_inertia("Profile/Show", %{title: "Hello"})
 
-# With options
+# With options (ssr: false disables SSR for this response even if enabled globally)
 conn
 |> render_inertia("Profile/Show", %{title: "Hello"}, ssr: true)
 ```
 
 **CRITICAL:** `conn.assigns` are NOT sent to React. Only props from
-`assign_prop/2` or the inline map in `render_inertia/3` reach the page.
+`assign_prop/2`, `assign_shared_prop/3`, or the inline map in `render_inertia/3`
+reach the page.
 
 Serialize explicitly — do not dump full Ecto schemas into props.
 
 ## Shared data
 
-Share in a plug used by the browser pipeline (auth plug is typical):
+Prefer `assign_shared_prop/3` in a browser-pipeline plug so keys appear in
+`sharedProps` (Inertia v3 can carry them forward on instant visits):
 
 ```elixir
 defmodule MyAppWeb.UserAuth do
@@ -41,15 +44,35 @@ defmodule MyAppWeb.UserAuth do
 
     conn
     |> assign(:current_user, user) # server-side auth checks
-    |> assign_prop(:current_user, serialize_user(user)) # React (→ currentUser if camelized)
+    |> assign_shared_prop(:current_user, serialize_user(user)) # React (→ currentUser if camelized)
   end
 end
 ```
 
+Inline maps can mark a value shared with `inertia_share/1`:
+
+```elixir
+conn
+|> render_inertia("Home", %{
+  current_user: inertia_share(serialize_user(user)),
+  other: "value"
+})
+```
+
+Shared props compose with other helpers:
+
+```elixir
+|> assign_shared_prop(:notifications, inertia_merge(notifications))
+|> assign_shared_prop(:permissions, inertia_defer(fn -> fetch_permissions() end))
+```
+
+`assign_prop/2` still works for globally-assigned data if you do not need
+`sharedProps` metadata.
+
 ### Flash messages
 
-Phoenix flash is included automatically under `props.flash`. Do **not** re-share
-flash with `assign_prop`.
+Phoenix flash is included automatically as a **top-level** page key (not under
+`props`). Do **not** re-share flash with `assign_prop`.
 
 ```elixir
 conn
@@ -57,13 +80,12 @@ conn
 |> redirect(to: ~p"/settings")
 ```
 
-Client receives:
+Client:
 
 ```ts
-props.flash // e.g. { info: "Settings updated" }
+const { flash } = usePage(); // e.g. { info: "Settings updated" }
+// NOT usePage().props.flash
 ```
-
-Read via `usePage().props.flash` (type it on your shared props).
 
 ## Prop types
 
@@ -75,15 +97,22 @@ conn
 |> assign_prop(:optional, inertia_optional(fn -> very_expensive() end))
 |> assign_prop(:deferred, inertia_defer(fn -> slow() end))
 |> assign_prop(:grouped, inertia_defer(fn -> chart() end, "analytics"))
+|> assign_prop(:rescued, inertia_defer(fn -> maybe_fail() end, on_error: :ignore))
 |> assign_prop(:items, inertia_merge(list))
+|> assign_prop(:items_deduped, inertia_merge(list, match_on: "id"))
+|> assign_prop(:messages, inertia_prepend(new_messages, match_on: "id"))
 |> assign_prop(:merged_defer, inertia_defer(&calculate_next_page/0) |> inertia_merge())
 |> assign_prop(:tree, inertia_deep_merge(map))
 |> assign_prop(:roles, inertia_once(fn -> Roles.all() end))
 |> assign_prop(:users, inertia_scroll(paginated))
 |> assign_prop(:csrf_token, inertia_always(get_csrf_token()))
 |> assign_prop(preserve_case(:raw_key), "unchanged")
+|> assign_shared_prop(:current_user, serialize_user(user))
 |> render_inertia("Dashboard")
 ```
+
+Wrappers work at any nesting depth (including inside closures), with
+dot-notation paths in deferred/merge metadata (e.g. `auth.permissions`).
 
 ### Lazy vs optional vs defer
 
@@ -97,6 +126,9 @@ conn
 
 Anonymous functions **and** named function references (`&Mod.fun/0`) are both
 valid for lazy / optional / defer / once / scroll.
+
+`inertia_defer(..., on_error: :ignore)` omits a failed deferred prop, reports its
+path in `rescuedProps`, logs, and emits `[:inertia, :deferred_prop, :rescue]`.
 
 ### Once props options
 
@@ -123,36 +155,38 @@ Compose with other helpers:
 |> assign_prop(:activity, inertia_once(inertia_merge(fn -> Activity.recent(user) end)))
 ```
 
-### Merge / deep merge
+### Merge / prepend / deep merge
 
 ```elixir
 |> assign_prop(:paginated_list, inertia_merge(["a", "b", "c"]))
 |> assign_prop(:paginated_list, inertia_defer(&calculate_next_page/0) |> inertia_merge())
+|> assign_prop(:users, inertia_merge(users, match_on: "id"))
+|> assign_prop(:users, inertia_merge(users, match_on: ["id", "email"]))
+|> assign_prop(:messages, inertia_prepend(new_messages))
+|> assign_prop(:messages, inertia_prepend(new_messages, match_on: "id"))
 |> assign_prop(:complex_object, inertia_deep_merge(%{a: %{b: %{c: %{d: 1}}}}))
 ```
 
+`match_on` enables client-side dedupe; keys land in `matchPropsOn` as
+`"path.field"` strings.
+
 ### Scroll props
 
-Expected shape (or a struct implementing `Inertia.ScrollMetadata`):
+`inertia_scroll` always shapes the prop as `%{<wrapper> => entries}` (default
+wrapper `"data"`). Pagination state goes in page-level `scrollProps` — it is
+**not** kept on the prop as `meta` unless you opt in with `:meta`.
+
+Accepts:
+
+- First-party: `Scrivener.Page`, Flop `{records, %Flop.Meta{}}`
+- A `{entries, meta}` tuple for other libs with an `Inertia.Paginated` impl on meta
+- A plain `%{data: [...], meta: %{...}}` map (entries kept; `meta` dropped from prop)
+- Any value with a custom `:scroll_metadata` function
 
 ```elixir
-%{
-  data: [%{id: 1, name: "Alice"}],
-  meta: %{
-    current_page: 1,
-    next_page: 2,
-    previous_page: nil,
-    page_name: "page" # optional, defaults to "page"
-  }
-}
-```
-
-This produces `mergeProps` for the data path (e.g. `"users.data"`) plus
-`scrollProps` metadata for the client `<InfiniteScroll>` component.
-
-```elixir
-# Basic
-|> assign_prop(:users, inertia_scroll(paginated_users))
+# Scrivener / Flop — no custom defimpl needed
+|> assign_prop(:users, inertia_scroll(MyApp.Repo.paginate(query)))
+|> assign_prop(:users, inertia_scroll(Flop.run(query, params)))
 
 # Lazy
 |> assign_prop(:users, inertia_scroll(fn -> User.paginate(params) end))
@@ -161,10 +195,20 @@ This produces `mergeProps` for the data path (e.g. `"users.data"`) plus
 |> assign_prop(:users, inertia_scroll(users, wrapper: "items", page_name: "users_page"))
 |> assign_prop(:orders, inertia_scroll(orders, page_name: "orders_page"))
 
-# Custom metadata extraction (e.g. Scrivener without a protocol impl)
-|> assign_prop(:users, inertia_scroll(scrivener_page,
+# Serialize each entry
+|> assign_prop(:users, inertia_scroll(Flop.run(query, params),
+  transform: fn user -> %{id: user.id, name: user.name} end
+))
+
+# Extra display data on the prop (alongside entries) — independent of scrollProps
+|> assign_prop(:users, inertia_scroll(Flop.run(query, params),
+  meta: fn {_records, meta} -> %{total: meta.total_count} end
+))
+
+# Custom scrollProps extraction (one-off; prefers protocol for reuse)
+|> assign_prop(:users, inertia_scroll(page,
   wrapper: "entries",
-  metadata: fn page ->
+  scroll_metadata: fn page ->
     %{
       page_name: "page",
       current_page: page.page_number,
@@ -175,30 +219,28 @@ This produces `mergeProps` for the data path (e.g. `"users.data"`) plus
 ))
 ```
 
-#### `Inertia.ScrollMetadata` protocol
+#### `Inertia.Paginated` protocol
 
-For reusable pagination library support:
+Replaces the removed `Inertia.ScrollMetadata` protocol. `to_scroll/1` returns a
+metadata map; include `:entries` when the struct carries them:
 
 ```elixir
-defimpl Inertia.ScrollMetadata, for: Scrivener.Page do
-  def to_scroll_metadata(page) do
+defimpl Inertia.Paginated, for: MyPaginator.Page do
+  def to_scroll(%{entries: entries, page_number: page, total_pages: total}) do
     %{
-      page_name: "page",
-      current_page: page.page_number,
-      previous_page: if(page.page_number > 1, do: page.page_number - 1),
-      next_page: if(page.page_number < page.total_pages, do: page.page_number + 1)
+      entries: entries,
+      current_page: page,
+      previous_page: if(page > 1, do: page - 1),
+      next_page: if(page < total, do: page + 1)
     }
   end
 end
 ```
 
-Then:
+For `{entries, meta}` libraries, implement on the meta struct and omit `:entries`.
 
-```elixir
-|> assign_prop(:users, inertia_scroll(scrivener_page, wrapper: "entries"))
-```
-
-Required metadata keys: `:page_name`, `:current_page`, `:previous_page`, `:next_page`.
+Omitted keys fall back to defaults (`page_name` → `"page"`; others → `nil`).
+See https://hexdocs.pm/inertia/Inertia.Paginated.html.
 
 ## Validations (PRG)
 
@@ -223,6 +265,7 @@ end
 - Top-level schema fields are `"name"`, **not** `"user.name"` (param nesting ≠ error keys)
 - `errors` prop is always present (empty object when none)
 - Errors survive the redirect (readable via `inertia_errors/1` on the redirect response)
+- Ecto is an **optional** Hex dep of `inertia`; Phoenix apps usually already have it
 
 ### Custom message function (Gettext)
 
@@ -253,7 +296,8 @@ conn
 
 ### `Inertia.Errors` protocol
 
-Built-in for `Ecto.Changeset` and properly shaped maps. For custom error types:
+Built-in for `Ecto.Changeset` (when Ecto is present) and properly shaped maps.
+For custom error types:
 
 ```elixir
 defimpl Inertia.Errors, for: MyApp.ValidationError do
@@ -277,6 +321,7 @@ https://hexdocs.pm/inertia/Inertia.Errors.html.
 - External URLs: `redirect(to: "https://...")` — adapter converts to **409** + `X-Inertia-Location`
 - Same-origin **non-Inertia** route: `conn |> force_inertia_redirect() |> redirect(to: "/legacy")`
 - PUT/PATCH/DELETE 302 → automatically upgraded to **303**
+- Preserve URL hash across redirect: `conn |> preserve_fragment() |> redirect(...)`
 
 ## History
 
@@ -291,13 +336,14 @@ Or globally: `config :inertia, history: [encrypt: true]`.
 
 The adapter hashes tracked static assets (via `endpoint` + `static_paths`) to
 compute a version string. When assets change, the client does a full page
-reload to pick up the new bundle.
+reload to pick up the new bundle. Version-mismatch **409** responses include
+`X-Inertia-Version`.
 
 ```elixir
 config :inertia,
   endpoint: MyAppWeb.Endpoint,
-  static_paths: ["/assets/app.js"], # include JS that needs a refresh when changed
-  default_version: "1"              # used when static_paths is empty / unused
+  static_paths: ["/assets/js/app.js"], # include JS that needs a refresh when changed
+  default_version: "1"                 # used when static_paths is empty / unused
 ```
 
 Keep `static_paths` aligned with the real compiled asset path (esbuild/Vite

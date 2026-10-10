@@ -3,6 +3,8 @@
 Pages are `.tsx` default exports. Props come from the controller — type them
 explicitly. With `camelize_props: true`, use camelCase in types.
 
+Requires **`@inertiajs/react` v3** (paired with Hex `inertia` ~> 3.0).
+
 ## Page components
 
 ```tsx
@@ -75,12 +77,18 @@ import { usePage } from "@inertiajs/react";
 import type { SharedProps } from "../types/page";
 
 export function Flash() {
-  const { flash } = usePage<SharedProps>().props;
-  return flash.info ? <div role="status">{flash.info}</div> : null;
+  // v3: flash is a top-level page key, NOT under props
+  const { flash } = usePage<{ flash?: { info?: string; error?: string } }>();
+  return flash?.info ? <div role="status">{flash.info}</div> : null;
+}
+
+export function CurrentUser() {
+  const { currentUser } = usePage<SharedProps>().props;
+  return currentUser ? <span>{currentUser.email}</span> : null;
 }
 ```
 
-Flash is under **`props.flash`** (auto from Phoenix). Auth is whatever you
+Flash is auto from Phoenix. Auth is whatever you `assign_shared_prop` /
 `assign_prop` in plugs (`currentUser` when camelized).
 
 ## Deferred UI
@@ -118,7 +126,11 @@ conn
 |> render_inertia("Users/Index")
 ```
 
-Client (Inertia v2):
+The prop holds **entries only** under the wrapper key (default `data`). Paging
+state lives in page `scrollProps` / the `<InfiniteScroll>` component — not a
+`meta` key on the prop (unless the server passed `:meta`).
+
+Client (Inertia v3):
 
 ```tsx
 import { InfiniteScroll } from "@inertiajs/react";
@@ -127,7 +139,7 @@ type User = { id: number; name: string };
 type Props = {
   users: {
     data: User[];
-    meta: { currentPage?: number; nextPage?: number | null };
+    // meta?: { total?: number }  // only if server used inertia_scroll(..., meta: ...)
   };
 };
 
@@ -167,3 +179,4 @@ camelize is on).
 - Parsing `window.location.search` instead of controller props
 - Checking `currentUser` in React as the only auth gate
 - Snake_case TS props when `camelize_props: true` (or the reverse)
+- Reading flash from `usePage().props.flash` (v2 pattern — use top-level `flash`)

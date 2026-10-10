@@ -2,7 +2,7 @@
 
 Assumes a Phoenix app using the official Hex `inertia` package
 ([inertiajs/inertia-phoenix](https://github.com/inertiajs/inertia-phoenix)),
-React, and TypeScript.
+React, and TypeScript. Targets **inertia Hex ~> 3.0** and **`@inertiajs/react` v3**.
 
 Default bundler is **esbuild** (what `mix inertia.install` configures). If the
 project uses Vite instead, use Vite-style `import.meta.glob` — do not mix the two.
@@ -34,7 +34,10 @@ mix inertia.install --client-framework react --typescript --camelize-props
 
 ```elixir
 # mix.exs
-{:inertia, "~> 2.6"}
+{:inertia, "~> 3.0"}
+# Most Phoenix apps already have ecto — required only for assign_errors(changeset).
+# SSR with the default adapter also needs:
+# {:nodejs, ">= 3.1.4 and < 4.0.0"}
 ```
 
 ```elixir
@@ -44,7 +47,8 @@ config :inertia,
   endpoint: MyAppWeb.Endpoint,
 
   # Static file paths to track for changes (include JS that needs a refresh when modified)
-  static_paths: ["/assets/app.js"],
+  # Installer / Phoenix 1.8 esbuild default output:
+  static_paths: ["/assets/js/app.js"],
 
   # Fallback version string when not tracking static assets (default: "1")
   default_version: "1",
@@ -60,6 +64,12 @@ config :inertia,
 
   # Raise on SSR failure (enable in non-prod; disable in prod so SSR falls back to CSR)
   raise_on_ssr_failure: config_env() != :prod
+
+  # Optional: CSP nonce assign key applied to the page-data <script> tag
+  # csp_nonce_assign_key: :csp_nonce
+
+  # Optional: disable SSR for path prefixes / regexes
+  # ssr_exclude_paths: ["/admin"]
 ```
 
 ### Wire helpers
@@ -106,29 +116,28 @@ Replace LiveView title helpers; add inertia head:
 <.inertia_head content={@inertia_head} />
 ```
 
-With esbuild code-splitting (installer enables this), load as ESM:
+With esbuild code-splitting (installer enables this), load as ESM from the
+`assets/js` output dir:
 
 ```heex
-<script type="module" defer phx-track-static src={~p"/assets/app.js"}></script>
+<script type="module" defer phx-track-static src={~p"/assets/js/app.js"}></script>
 ```
 
 ## Client (React + TypeScript)
 
 ```sh
 cd assets
-npm install @inertiajs/react react react-dom axios
+npm install @inertiajs/react react react-dom
 npm install -D typescript @types/react @types/react-dom
 ```
+
+Inertia v3 ships a built-in HTTP client — **do not add axios** just for Inertia.
 
 ```tsx
 // assets/js/app.tsx
 import React from "react";
-import axios from "axios";
 import { createInertiaApp } from "@inertiajs/react";
 import { createRoot } from "react-dom/client";
-
-// Adapter sets XSRF-TOKEN cookie; Phoenix expects x-csrf-token header
-axios.defaults.xsrfHeaderName = "x-csrf-token";
 
 createInertiaApp({
   resolve: (name) => {
@@ -137,6 +146,10 @@ createInertiaApp({
   },
   setup({ App, el, props }) {
     createRoot(el).render(<App {...props} />);
+  },
+  http: {
+    // Adapter sets XSRF-TOKEN cookie; Phoenix expects x-csrf-token header
+    xsrfHeaderName: "x-csrf-token",
   },
 });
 ```
@@ -148,33 +161,26 @@ Pages live under `assets/js/pages/` as **`.tsx`** default exports.
 
 - Entry: `js/app.tsx`
 - esbuild `>= 0.19` for glob/dynamic imports (required for page resolution)
-- `--target=es2020` minimum
+- Prefer Phoenix's current default (e.g. `0.25+`) with `--target=es2022`
 - After bumping esbuild version: `mix esbuild.install`
+- Add `cmd --cd assets npm install` to the `assets.setup` Mix alias
 
 ```elixir
 config :esbuild,
-  version: "0.21.5",
+  version: "0.25.4",
   my_app: [
     args:
-      ~w(js/app.tsx --bundle --target=es2020 --outdir=../priv/static/assets --external:/fonts/* --external:/images/*),
+      ~w(js/app.tsx --bundle --chunk-names=chunks/[name]-[hash] --splitting --format=esm --target=es2022 --outdir=../priv/static/assets/js --external:/fonts/* --external:/images/*),
     cd: Path.expand("../assets", __DIR__),
     env: %{"NODE_PATH" => Path.expand("../deps", __DIR__)}
   ]
 ```
 
-### Code splitting (recommended for larger apps)
+### Code splitting (recommended)
 
-- `--format=esm`
-- `--splitting`
-- optional `--chunk-names=chunks/[name]-[hash]`
-- Root layout script `type="module"` (see above)
-
-```elixir
-args:
-  ~w(js/app.tsx --bundle --chunk-names=chunks/[name]-[hash] --splitting --format=esm --target=es2020 --outdir=../priv/static/assets --external:/fonts/* --external:/images/*),
-```
-
-ESM splitting needs modern browsers — verify against your audience.
+Installer enables `--format=esm` + `--splitting`. Root layout script must use
+`type="module"` (see above). ESM splitting needs modern browsers — verify against
+your audience.
 
 ### Vite (only if the project already uses Vite)
 
@@ -191,7 +197,8 @@ Do **not** use `import.meta.glob` under esbuild.
 
 `endpoint` + `static_paths` compute a version hash. When a tracked file changes,
 Inertia forces a full reload so clients get the new bundle. Include every JS
-entry that should invalidate the page when modified. If you skip tracking, set
+entry that should invalidate the page when modified. Keep paths aligned with the
+real compiled asset path (e.g. `/assets/js/app.js`). If you skip tracking, set
 `default_version` and bump it manually when needed.
 
 ## camelize_props (recommended for this stack)
@@ -227,6 +234,8 @@ Detect from `config/config.exs` before writing types.
 
 ## Shared TypeScript types
 
+Flash is a **top-level** page key in v3 (not under `props`):
+
 ```tsx
 // assets/js/types/page.ts
 export type Flash = {
@@ -236,15 +245,16 @@ export type Flash = {
 
 export type SharedProps = {
   currentUser: { id: number; email: string } | null;
-  flash: Flash;
 };
 ```
 
 ```tsx
 import { usePage } from "@inertiajs/react";
-import type { SharedProps } from "../types/page";
+import type { Flash, SharedProps } from "../types/page";
 
-const { currentUser, flash } = usePage<SharedProps>().props;
+const { currentUser } = usePage<SharedProps>().props;
+const { flash } = usePage<{ flash: Flash }>();
+// or: const flash = usePage().flash as Flash
 ```
 
 Path aliases (`@/`) only if `tsconfig` / bundler already define them — do not invent
@@ -252,11 +262,16 @@ aliases the build does not resolve.
 
 ## CSRF
 
-The adapter sets the `XSRF-TOKEN` cookie. Configure Axios once in `app.tsx`:
+The adapter sets the `XSRF-TOKEN` cookie. Configure the header name on
+`createInertiaApp` (built-in HTTP client — not axios):
 
 ```ts
-axios.defaults.xsrfHeaderName = "x-csrf-token";
+createInertiaApp({
+  http: {
+    xsrfHeaderName: "x-csrf-token",
+  },
+  // ...
+});
 ```
 
-Phoenix expects that header name. `<Form>` / `useForm` use the Inertia client
-(axios under the hood).
+Phoenix expects that header name. `<Form>` / `useForm` use the Inertia client.

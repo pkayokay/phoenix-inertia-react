@@ -100,7 +100,7 @@ still follow the changeset (`name`), not the nest path.
 ## NEVER
 
 - `react-hook-form` / Formik — fights Inertia CSRF, redirects, error mapping
-- Parallel `axios.post` for the same mutations Inertia should own
+- Parallel `fetch` / axios for the same mutations Inertia should own
 - Flat `useForm({ name, email })` when the controller pattern-matches `%{"user" => params}`
 - Mapping `errors["user.name"]` for a top-level `:name` changeset error
 
@@ -116,13 +116,19 @@ conn |> assign_errors(changeset) |> redirect(to: ~p"/users/new")
 
 ## CSRF
 
-Adapter sets `XSRF-TOKEN` cookie. Client must send `x-csrf-token`:
+Adapter sets `XSRF-TOKEN` cookie. Configure the Inertia v3 built-in HTTP client
+in `app.tsx` (axios is not required):
 
 ```ts
-axios.defaults.xsrfHeaderName = "x-csrf-token";
+createInertiaApp({
+  http: {
+    xsrfHeaderName: "x-csrf-token",
+  },
+  // ...
+});
 ```
 
-Keep this in `app.tsx`. `<Form>` / `useForm` use the Inertia client.
+`<Form>` / `useForm` use that client.
 
 ## Files
 

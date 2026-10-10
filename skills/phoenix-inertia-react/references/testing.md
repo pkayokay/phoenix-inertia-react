@@ -18,8 +18,19 @@ defmodule MyAppWeb.ConnCase do
 end
 ```
 
-Helpers: `inertia_component/1`, `inertia_props/1`, `inertia_errors/1`,
-`inertia_response?/1`.
+| Helper | Description |
+|--------|-------------|
+| `inertia_component/1` | Component name |
+| `inertia_props/1` | Props map |
+| `inertia_errors/1` | Validation errors (props or session) |
+| `inertia_flash/1` | Flash map (top-level page key) |
+| `inertia_page/1` | Full page object |
+| `inertia_shared_props/1` | Shared prop keys |
+| `inertia_deferred_props/1` | Deferred prop groups |
+| `inertia_merge_props/1` | Merge prop paths |
+| `inertia_scroll_props/1` | Scroll pagination metadata |
+| `inertia_once_props/1` | Once prop metadata |
+| `inertia_response?/1` | Whether the response is Inertia |
 
 ## Assert component + props
 
@@ -33,6 +44,7 @@ test "renders users index", %{conn: conn} do
   assert inertia_component(conn) == "Users/Index"
   assert %{users: users} = inertia_props(conn)
   assert length(users) == 2
+  assert inertia_flash(conn) == %{}
 end
 ```
 
@@ -62,9 +74,13 @@ end
 ## Tips
 
 - Follow redirects when you need the **final page props** after PRG
-- Shared props from plugs appear in `inertia_props/1`
+- Shared props from plugs appear in `inertia_props/1`; keys also via `inertia_shared_props/1`
+- Flash is **not** inside props — use `inertia_flash/1`
 - Deferred props may be absent or marked deferred depending on request headers —
-  test the initial visit and partial-reload cases separately
+  test the initial visit and partial-reload cases separately; use `inertia_deferred_props/1`
+- Scroll / merge / once metadata: `inertia_scroll_props/1`, `inertia_merge_props/1`,
+  `inertia_once_props/1`
 - Assert serialized maps, not raw Ecto structs
 - Use `inertia_response?/1` when an action might return a non-Inertia response
 - Error keys are flat strings (`"name"`, `"team.name"`) — same shape as the client
+- Keep `config :inertia, ssr: false` in test so the Node SSR pool is not required

@@ -3,11 +3,24 @@
 Full detail: https://hexdocs.pm/inertia/readme.html#server-side-rendering  
 Source: https://github.com/inertiajs/inertia-phoenix
 
-Skip unless the project enables `ssr: true`. Assumes React + TypeScript.
+Skip unless the project enables `ssr: true`. Assumes React + TypeScript and
+**inertia Hex ~> 3.0**.
 
 Unlike some backends, this adapter does **not** run a separate Node HTTP server.
 It pools Node.js worker processes inside the Elixir supervision tree and calls
-an exported `render` function.
+an exported `render` function (default adapter). Custom runtimes plug in via
+`Inertia.SSR.Adapter`.
+
+## Optional Hex deps
+
+`nodejs` is optional. Add it only for the default Node adapter:
+
+```elixir
+{:inertia, "~> 3.0"},
+{:nodejs, ">= 3.1.4 and < 4.0.0"}
+```
+
+Pin `nodejs` ≥ 3.1.4 (CVE fix for worker protocol race / cross-request leak).
 
 ## 1. Server entry (`ssr.tsx`)
 
@@ -36,9 +49,10 @@ export function render(page: unknown) {
 ```elixir
 # config/config.exs
 config :esbuild,
-  version: "0.21.5",
+  version: "0.25.4",
   my_app: [
-    args: ~w(js/app.tsx --bundle --target=es2020 --outdir=../priv/static/assets --external:/fonts/* --external:/images/*),
+    args:
+      ~w(js/app.tsx --bundle --chunk-names=chunks/[name]-[hash] --splitting --format=esm --target=es2022 --outdir=../priv/static/assets/js --external:/fonts/* --external:/images/*),
     cd: Path.expand("../assets", __DIR__),
     env: %{"NODE_PATH" => Path.expand("../deps", __DIR__)}
   ],
@@ -85,6 +99,8 @@ children = [
   # ...
   # path = directory containing ssr.js
   {Inertia.SSR, path: Path.join([Application.app_dir(:my_app), "priv"])},
+  # Optional ESM entrypoint: {Inertia.SSR, path: ..., esm: true}
+  # Optional custom adapter: {Inertia.SSR, path: ..., ssr_adapter: MyApp.SSR.BunAdapter}
   MyAppWeb.Endpoint
 ]
 ```
@@ -94,14 +110,18 @@ children = [
 ```elixir
 config :inertia,
   endpoint: MyAppWeb.Endpoint,
-  static_paths: ["/assets/app.js"],
+  static_paths: ["/assets/js/app.js"],
   default_version: "1",
   ssr: true,
   # Recommended: raise in non-prod; in prod fall back to CSR instead of 500
   raise_on_ssr_failure: config_env() != :prod
+  # Optional: ssr_exclude_paths: ["/admin", ~r/^\/internal/]
 ```
 
+Disable in `config/test.exs` (`ssr: false`) so tests do not need the Node pool.
+
 Per-response override: `render_inertia(conn, "Page", props, ssr: true)`.
+`ssr: false` disables SSR for that response even when enabled globally.
 
 ## 5. Client hydration
 
@@ -114,6 +134,9 @@ createInertiaApp({
   resolve: (name) => import(`./pages/${name}.tsx`),
   setup({ App, el, props }) {
     hydrateRoot(el, <App {...props} />);
+  },
+  http: {
+    xsrfHeaderName: "x-csrf-token",
   },
 });
 ```
@@ -148,7 +171,8 @@ ENV NODE_ENV="production"
 - [ ] esbuild `ssr` profile → `priv/ssr.js`
 - [ ] Dev watcher + `assets.build` / `assets.deploy` include `esbuild ssr`
 - [ ] `/priv/ssr.js` gitignored
+- [ ] `{:nodejs, ">= 3.1.4 and < 4.0.0"}` in deps (default adapter)
 - [ ] `{Inertia.SSR, path: ...}` in supervision tree
-- [ ] `ssr: true` (+ sensible `raise_on_ssr_failure`)
+- [ ] `ssr: true` (+ sensible `raise_on_ssr_failure`); `ssr: false` in test
 - [ ] Client uses `hydrateRoot`
 - [ ] Production image has Node + `NODE_ENV=production`
